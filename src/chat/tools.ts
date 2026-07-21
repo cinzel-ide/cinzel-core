@@ -37,8 +37,44 @@ export const TOOL_SPECS: ToolSpec[] = [
             },
             required: ['path', 'content']
         }
+    },
+    {
+        name: 'search_text',
+        description: 'Procura texto/símbolos em todo o workspace. Usa para saber se algo JÁ EXISTE e onde é usado, antes de escrever código novo.',
+        parameters: {
+            type: 'object',
+            properties: { query: { type: 'string', description: 'Texto ou símbolo a procurar.' } },
+            required: ['query']
+        }
+    },
+    {
+        name: 'find_files',
+        description: 'Encontra ficheiros por padrão glob (ex.: **/*.test.ts). Usa para mapear a estrutura do projeto.',
+        parameters: {
+            type: 'object',
+            properties: { pattern: { type: 'string', description: 'Padrão glob, ex.: src/**/*.ts' } },
+            required: ['pattern']
+        }
+    },
+    {
+        name: 'propose_plan',
+        description: 'Apresenta um PLANO ao utilizador e pede aprovação ANTES de alterar código. Chama isto sempre que a tarefa vá modificar ficheiros. Só implementa depois de aprovado.',
+        parameters: {
+            type: 'object',
+            properties: {
+                summary: { type: 'string', description: 'Resumo do que vais fazer.' },
+                steps: { type: 'array', description: 'Passos, por ordem.', items: { type: 'string' } },
+                filesToCreate: { type: 'array', description: 'Ficheiros a criar.', items: { type: 'string' } },
+                filesToEdit: { type: 'array', description: 'Ficheiros a editar.', items: { type: 'string' } },
+                risk: { type: 'string', description: 'Risco: baixo / médio / alto, com uma frase.' }
+            },
+            required: ['summary', 'steps', 'risk']
+        }
     }
 ];
+
+const MAX_SEARCH_FILES = 400;
+const MAX_SEARCH_HITS = 40;
 
 function workspaceRoot(): vscode.Uri {
     const folders = vscode.workspace.workspaceFolders;
@@ -97,9 +133,64 @@ export async function executeTool(call: ToolCall): Promise<string> {
             await vscode.window.showTextDocument(doc, { preview: false });
             return `Escrito ${rel} (${content.split('\n').length} linhas).`;
         }
+        case 'search_text':
+            return searchText(String(args.query ?? ''));
+        case 'find_files': {
+            const uris = await vscode.workspace.findFiles(String(args.pattern ?? '**/*'), '**/node_modules/**', 100);
+            if (!uris.length) { return 'sem ficheiros'; }
+            return uris.map(u => vscode.workspace.asRelativePath(u)).sort().join('\n');
+        }
+        case 'propose_plan':
+            return proposePlan(args);
         default:
             return `ERRO: ferramenta desconhecida "${call.name}".`;
     }
+}
+
+/** Procura texto no workspace (scan em JS, sem dependências; ignora node_modules). */
+async function searchText(query: string): Promise<string> {
+    const q = query.trim();
+    if (!q) { return 'query vazia'; }
+    const uris = await vscode.workspace.findFiles('**/*', '**/node_modules/**', MAX_SEARCH_FILES);
+    const needle = q.toLowerCase();
+    const hits: string[] = [];
+    for (const uri of uris) {
+        if (hits.length >= MAX_SEARCH_HITS) { break; }
+        try {
+            const data = await vscode.workspace.fs.readFile(uri);
+            if (data.byteLength > 200_000) { continue; }
+            const lines = Buffer.from(data).toString('utf8').split('\n');
+            const rel = vscode.workspace.asRelativePath(uri);
+            for (let i = 0; i < lines.length && hits.length < MAX_SEARCH_HITS; i++) {
+                if (lines[i].toLowerCase().includes(needle)) {
+                    hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 120)}`);
+                }
+            }
+        } catch { /* binário/ilegível — ignora */ }
+    }
+    return hits.length ? hits.join('\n') : `sem resultados para "${q}"`;
+}
+
+/** Mostra o plano ao utilizador e pede aprovação. */
+async function proposePlan(args: Record<string, unknown>): Promise<string> {
+    const summary = String(args.summary ?? '');
+    const steps = Array.isArray(args.steps) ? args.steps.map(String) : [];
+    const create = Array.isArray(args.filesToCreate) ? args.filesToCreate.map(String) : [];
+    const edit = Array.isArray(args.filesToEdit) ? args.filesToEdit.map(String) : [];
+    const risk = String(args.risk ?? 'desconhecido');
+    const detail = [
+        summary, '',
+        steps.length ? 'Passos:\n' + steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n') : '',
+        create.length ? `Criar: ${create.join(', ')}` : '',
+        edit.length ? `Editar: ${edit.join(', ')}` : '',
+        `Risco: ${risk}`
+    ].filter(Boolean).join('\n');
+    const choice = await vscode.window.showInformationMessage(
+        'Plano do Cinzel — aprovar?', { modal: true, detail }, 'Aprovar'
+    );
+    return choice === 'Aprovar'
+        ? 'APROVADO — prossegue com a implementação.'
+        : 'REJEITADO pelo utilizador — não implementes; pergunta o que queres ajustar.';
 }
 
 /** Confirmação humana antes de escrever. Oferece ver o diff primeiro. */
