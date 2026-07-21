@@ -1,0 +1,62 @@
+{
+  "name": "cinzel-core",
+  "displayName": "Cinzel Core",
+  "description": "Motor de IA do Cinzel — chat, providers e (em breve) agentes.",
+  "version": "0.1.0",
+  "publisher": "cinzel",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Chat", "Other"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "cinzel", "title": "Cinzel", "icon": "media/cinzel.svg" }
+      ]
+    },
+    "views": {
+      "cinzel": [
+        { "id": "cinzel.chat", "name": "Chat", "type": "webview" }
+      ]
+    },
+    "commands": [
+      { "command": "cinzel.setApiKey", "title": "Cinzel: Definir chave de API…" },
+      { "command": "cinzel.clearApiKey", "title": "Cinzel: Remover chave de API" },
+      { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "cinzel.chat.clear", "when": "view == cinzel.chat", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "Cinzel",
+      "properties": {
+        "cinzel.baseUrl": {
+          "type": "string",
+          "default": "https://api.groq.com/openai/v1",
+          "markdownDescription": "Endpoint compatível com OpenAI. Por omissão a **Groq** (tier gratuito). Exemplos: `https://api.anthropic.com/v1` não é compatível-OpenAI; usa OpenAI, Groq, OpenRouter, DeepSeek, ou um servidor local (Ollama/LM Studio)."
+        },
+        "cinzel.model": {
+          "type": "string",
+          "default": "openai/gpt-oss-120b",
+          "description": "Modelo a usar no chat."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "node esbuild.js --production"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  }
+}
