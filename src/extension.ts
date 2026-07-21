@@ -4,7 +4,7 @@ import { CinzelChatViewProvider } from './chat/chatViewProvider';
 const API_KEY_SECRET = 'cinzel.apiKey';
 
 export function activate(context: vscode.ExtensionContext): void {
-    const provider = new CinzelChatViewProvider(context.extensionUri, context.secrets);
+    const provider = new CinzelChatViewProvider(context);
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(CinzelChatViewProvider.viewType, provider)
@@ -27,7 +27,9 @@ export function activate(context: vscode.ExtensionContext): void {
             await context.secrets.delete(API_KEY_SECRET);
             vscode.window.showInformationMessage('Cinzel: chave removida.');
         }),
-        vscode.commands.registerCommand('cinzel.chat.clear', () => provider.clear())
+        vscode.commands.registerCommand('cinzel.chat.clear', () => provider.clear()),
+        vscode.commands.registerCommand('cinzel.attachSelection', () => provider.attachActiveEditor('selection')),
+        vscode.commands.registerCommand('cinzel.attachFile', () => provider.attachActiveEditor('file'))
     );
 }
 

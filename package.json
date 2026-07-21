@@ -24,11 +24,17 @@
     "commands": [
       { "command": "cinzel.setApiKey", "title": "Cinzel: Definir chave de API…" },
       { "command": "cinzel.clearApiKey", "title": "Cinzel: Remover chave de API" },
-      { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" }
+      { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" },
+      { "command": "cinzel.attachSelection", "title": "Cinzel: Anexar seleção ao chat" },
+      { "command": "cinzel.attachFile", "title": "Cinzel: Anexar ficheiro ao chat" }
     ],
     "menus": {
       "view/title": [
         { "command": "cinzel.chat.clear", "when": "view == cinzel.chat", "group": "navigation" }
+      ],
+      "editor/context": [
+        { "command": "cinzel.attachSelection", "when": "editorHasSelection", "group": "cinzel@1" },
+        { "command": "cinzel.attachFile", "group": "cinzel@2" }
       ]
     },
     "configuration": {
