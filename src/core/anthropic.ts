@@ -1,4 +1,4 @@
-import { ChatMessage, StreamConfig } from './types';
+import { AgentMessage, AgentTurn, ChatMessage, StreamConfig, ToolCall, ToolSpec } from './types';
 import { forEachSseData, httpError } from './openai';
 
 /**
@@ -58,4 +58,85 @@ export async function streamAnthropic(
         }
         return false;
     });
+}
+
+// --- tool-calling (não-streaming) ---
+
+/**
+ * Serializa mensagens do agente para o formato da Anthropic. Regras próprias:
+ *  - o assistente com ferramentas manda blocos `text` + `tool_use`
+ *  - os resultados de ferramentas vão em mensagens `user` com blocos
+ *    `tool_result`; resultados consecutivos são AGRUPADOS num só `user`
+ *    (a API exige alternância estrita user/assistant).
+ */
+function toAnthropicMessages(messages: AgentMessage[]): { system: string; turns: unknown[] } {
+    const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
+    const turns: unknown[] = [];
+    let pendingToolResults: unknown[] = [];
+
+    const flush = () => {
+        if (pendingToolResults.length) {
+            turns.push({ role: 'user', content: pendingToolResults });
+            pendingToolResults = [];
+        }
+    };
+
+    for (const m of messages) {
+        if (m.role === 'system') { continue; }
+        if (m.role === 'tool') {
+            pendingToolResults.push({ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content });
+            continue;
+        }
+        flush();
+        if (m.role === 'user') {
+            turns.push({ role: 'user', content: m.content });
+        } else {
+            const blocks: unknown[] = [];
+            if (m.content) { blocks.push({ type: 'text', text: m.content }); }
+            for (const c of m.toolCalls ?? []) {
+                blocks.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments });
+            }
+            turns.push({ role: 'assistant', content: blocks });
+        }
+    }
+    flush();
+    return { system, turns };
+}
+
+export async function completeAnthropic(
+    messages: AgentMessage[],
+    tools: ToolSpec[],
+    cfg: StreamConfig
+): Promise<AgentTurn> {
+    const { system, turns } = toAnthropicMessages(messages);
+    const url = `${cfg.baseUrl.replace(/\/+$/, '')}/messages`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-api-key': cfg.apiKey,
+            'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+            model: cfg.model,
+            max_tokens: cfg.maxTokens ?? 4096,
+            system: system || undefined,
+            tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })),
+            messages: turns
+        }),
+        signal: cfg.signal
+    });
+    if (!res.ok) { throw new Error(await httpError(res)); }
+    const json = await res.json() as {
+        content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
+    };
+    let text = '';
+    const toolCalls: ToolCall[] = [];
+    for (const block of json.content ?? []) {
+        if (block.type === 'text' && block.text) { text += block.text; }
+        else if (block.type === 'tool_use' && block.id && block.name) {
+            toolCalls.push({ id: block.id, name: block.name, arguments: block.input ?? {} });
+        }
+    }
+    return { text, toolCalls };
 }

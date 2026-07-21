@@ -1,4 +1,4 @@
-import { ChatMessage, StreamConfig } from './types';
+import { AgentMessage, AgentTurn, ChatMessage, StreamConfig, ToolSpec } from './types';
 
 /**
  * Endpoint compatível com OpenAI (`/chat/completions`), em streaming.
@@ -68,4 +68,68 @@ export async function forEachSseData(
 export async function httpError(res: Response): Promise<string> {
     const detail = await res.text().catch(() => '');
     return `HTTP ${res.status} ${res.statusText}` + (detail ? ` — ${detail.slice(0, 400)}` : '');
+}
+
+// --- tool-calling (não-streaming) ---
+
+function toOpenAiMessages(messages: AgentMessage[]): unknown[] {
+    return messages.map(m => {
+        switch (m.role) {
+            case 'assistant':
+                return {
+                    role: 'assistant',
+                    content: m.content || null,
+                    tool_calls: m.toolCalls?.length
+                        ? m.toolCalls.map(c => ({
+                            id: c.id,
+                            type: 'function',
+                            function: { name: c.name, arguments: JSON.stringify(c.arguments) }
+                        }))
+                        : undefined
+                };
+            case 'tool':
+                return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+            default:
+                return { role: m.role, content: m.content };
+        }
+    });
+}
+
+export async function completeOpenAI(
+    messages: AgentMessage[],
+    tools: ToolSpec[],
+    cfg: StreamConfig
+): Promise<AgentTurn> {
+    const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey}` },
+        body: JSON.stringify({
+            model: cfg.model,
+            messages: toOpenAiMessages(messages),
+            tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
+            tool_choice: 'auto'
+        }),
+        signal: cfg.signal
+    });
+    if (!res.ok) { throw new Error(await httpError(res)); }
+    const json = await res.json() as {
+        choices: { message: { content?: string; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+    };
+    const msg = json.choices?.[0]?.message ?? {};
+    const toolCalls = (msg.tool_calls ?? []).map(tc => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: safeParseArgs(tc.function.arguments)
+    }));
+    return { text: msg.content ?? '', toolCalls };
+}
+
+function safeParseArgs(raw: string): Record<string, unknown> {
+    try {
+        const v = JSON.parse(raw);
+        return v && typeof v === 'object' ? v as Record<string, unknown> : {};
+    } catch {
+        return {};
+    }
 }
