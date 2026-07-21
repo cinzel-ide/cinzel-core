@@ -24,6 +24,7 @@
     "commands": [
       { "command": "cinzel.setApiKey", "title": "Cinzel: Definir chave de API…" },
       { "command": "cinzel.clearApiKey", "title": "Cinzel: Remover chave de API" },
+      { "command": "cinzel.selectModel", "title": "Cinzel: Escolher modelo…" },
       { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" },
       { "command": "cinzel.attachSelection", "title": "Cinzel: Anexar seleção ao chat" },
       { "command": "cinzel.attachFile", "title": "Cinzel: Anexar ficheiro ao chat" }
@@ -40,15 +41,27 @@
     "configuration": {
       "title": "Cinzel",
       "properties": {
-        "cinzel.baseUrl": {
-          "type": "string",
-          "default": "https://api.groq.com/openai/v1",
-          "markdownDescription": "Endpoint compatível com OpenAI. Por omissão a **Groq** (tier gratuito). Exemplos: `https://api.anthropic.com/v1` não é compatível-OpenAI; usa OpenAI, Groq, OpenRouter, DeepSeek, ou um servidor local (Ollama/LM Studio)."
-        },
-        "cinzel.model": {
-          "type": "string",
-          "default": "openai/gpt-oss-120b",
-          "description": "Modelo a usar no chat."
+        "cinzel.models": {
+          "type": "array",
+          "markdownDescription": "Modelos escolhíveis no chat. Cada entrada: `id`, `label`, `provider` (`openai` ou `anthropic`), `baseUrl`, `model` e (na Anthropic) `maxTokens`. A chave de API é pedida por `baseUrl` e guardada no keychain do sistema.",
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "provider", "baseUrl", "model"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "provider": { "type": "string", "enum": ["openai", "anthropic"] },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" },
+              "maxTokens": { "type": "number" }
+            }
+          },
+          "default": [
+            { "id": "groq-gpt-oss-120b", "label": "Groq · gpt-oss-120b (grátis)", "provider": "openai", "baseUrl": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b" },
+            { "id": "groq-llama-3.3-70b", "label": "Groq · llama-3.3-70b (grátis)", "provider": "openai", "baseUrl": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile" },
+            { "id": "anthropic-claude-sonnet", "label": "Anthropic · Claude Sonnet 4", "provider": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "model": "claude-sonnet-4-20250514", "maxTokens": 4096 },
+            { "id": "openai-gpt-4o", "label": "OpenAI · GPT-4o", "provider": "openai", "baseUrl": "https://api.openai.com/v1", "model": "gpt-4o" }
+          ]
         }
       }
     }

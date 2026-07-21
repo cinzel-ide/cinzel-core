@@ -1,8 +1,6 @@
 import * as vscode from 'vscode';
 import { CinzelChatViewProvider } from './chat/chatViewProvider';
 
-const API_KEY_SECRET = 'cinzel.apiKey';
-
 export function activate(context: vscode.ExtensionContext): void {
     const provider = new CinzelChatViewProvider(context);
 
@@ -11,22 +9,10 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('cinzel.setApiKey', async () => {
-            const key = await vscode.window.showInputBox({
-                title: 'Chave de API do Cinzel',
-                prompt: 'Groq / OpenAI / OpenRouter / … — guardada no keychain do sistema, nunca em texto simples.',
-                password: true,
-                ignoreFocusOut: true
-            });
-            if (key && key.trim()) {
-                await context.secrets.store(API_KEY_SECRET, key.trim());
-                vscode.window.showInformationMessage('Cinzel: chave guardada no keychain do sistema.');
-            }
-        }),
-        vscode.commands.registerCommand('cinzel.clearApiKey', async () => {
-            await context.secrets.delete(API_KEY_SECRET);
-            vscode.window.showInformationMessage('Cinzel: chave removida.');
-        }),
+        // A chave é por provider: guarda-a para o modelo atualmente ativo.
+        vscode.commands.registerCommand('cinzel.setApiKey', () => provider.promptSetApiKey()),
+        vscode.commands.registerCommand('cinzel.clearApiKey', () => provider.promptClearApiKey()),
+        vscode.commands.registerCommand('cinzel.selectModel', () => provider.promptSelectModel()),
         vscode.commands.registerCommand('cinzel.chat.clear', () => provider.clear()),
         vscode.commands.registerCommand('cinzel.attachSelection', () => provider.attachActiveEditor('selection')),
         vscode.commands.registerCommand('cinzel.attachFile', () => provider.attachActiveEditor('file'))
