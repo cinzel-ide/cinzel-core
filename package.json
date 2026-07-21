@@ -25,6 +25,7 @@
       { "command": "cinzel.setApiKey", "title": "Cinzel: Definir chave de API…" },
       { "command": "cinzel.clearApiKey", "title": "Cinzel: Remover chave de API" },
       { "command": "cinzel.selectModel", "title": "Cinzel: Escolher modelo…" },
+      { "command": "cinzel.completion.toggle", "title": "Cinzel: Ligar/desligar autocomplete" },
       { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" },
       { "command": "cinzel.attachSelection", "title": "Cinzel: Anexar seleção ao chat" },
       { "command": "cinzel.attachFile", "title": "Cinzel: Anexar ficheiro ao chat" }
@@ -62,6 +63,26 @@
             { "id": "anthropic-claude-sonnet", "label": "Anthropic · Claude Sonnet 4", "provider": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "model": "claude-sonnet-4-20250514", "maxTokens": 4096 },
             { "id": "openai-gpt-4o", "label": "OpenAI · GPT-4o", "provider": "openai", "baseUrl": "https://api.openai.com/v1", "model": "gpt-4o" }
           ]
+        },
+        "cinzel.completion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Autocomplete inline (ghost text) via um modelo FIM local no Ollama."
+        },
+        "cinzel.completion.ollamaHost": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Host do Ollama para o autocomplete."
+        },
+        "cinzel.completion.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:1.5b-base",
+          "markdownDescription": "Modelo FIM. TEM de ser uma build `-base` (com capacidade `insert`); a variante `instruct` não faz FIM."
+        },
+        "cinzel.completion.maxTokens": {
+          "type": "number",
+          "default": 128,
+          "description": "Nº máximo de tokens por sugestão (mantém curto e rápido)."
         }
       }
     }
