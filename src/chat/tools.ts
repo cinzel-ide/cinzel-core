@@ -180,15 +180,16 @@ async function proposePlan(args: Record<string, unknown>): Promise<string> {
     const risk = String(args.risk ?? 'desconhecido');
     const detail = [
         summary, '',
-        steps.length ? 'Passos:\n' + steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n') : '',
-        create.length ? `Criar: ${create.join(', ')}` : '',
-        edit.length ? `Editar: ${edit.join(', ')}` : '',
-        `Risco: ${risk}`
+        steps.length ? vscode.l10n.t('Steps:') + '\n' + steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n') : '',
+        create.length ? vscode.l10n.t('Create: {0}', create.join(', ')) : '',
+        edit.length ? vscode.l10n.t('Edit: {0}', edit.join(', ')) : '',
+        vscode.l10n.t('Risk: {0}', risk)
     ].filter(Boolean).join('\n');
+    const approve = vscode.l10n.t('Approve');
     const choice = await vscode.window.showInformationMessage(
-        'Plano do Cinzel — aprovar?', { modal: true, detail }, 'Aprovar'
+        vscode.l10n.t('Cinzel plan — approve?'), { modal: true, detail }, approve
     );
-    return choice === 'Aprovar'
+    return choice === approve
         ? 'APROVADO — prossegue com a implementação.'
         : 'REJEITADO pelo utilizador — não implementes; pergunta o que queres ajustar.';
 }
@@ -197,14 +198,18 @@ async function proposePlan(args: Record<string, unknown>): Promise<string> {
 async function confirmWrite(rel: string, uri: vscode.Uri, content: string): Promise<boolean> {
     const already = await exists(uri);
     const detail = content.split('\n').slice(0, 12).join('\n');
+    const lines = content.split('\n').length;
+    const apply = vscode.l10n.t('Apply');
+    const viewDiff = vscode.l10n.t('View diff');
     for (; ;) {
+        const message = already
+            ? vscode.l10n.t('The agent wants to replace "{0}" ({1} lines).', rel, lines)
+            : vscode.l10n.t('The agent wants to create "{0}" ({1} lines).', rel, lines);
         const choice = await vscode.window.showWarningMessage(
-            `O agente quer ${already ? 'substituir' : 'criar'} "${rel}" (${content.split('\n').length} linhas).`,
-            { modal: true, detail },
-            'Aplicar', 'Ver diff'
+            message, { modal: true, detail }, apply, viewDiff
         );
-        if (choice === 'Aplicar') { return true; }
-        if (choice === 'Ver diff') { await showDiff(rel, uri, already, content); continue; }
+        if (choice === apply) { return true; }
+        if (choice === viewDiff) { await showDiff(rel, uri, already, content); continue; }
         return false; // dismiss = recusa
     }
 }
@@ -218,5 +223,5 @@ async function showDiff(rel: string, uri: vscode.Uri, already: boolean, content:
         await vscode.workspace.fs.writeFile(emptyTmp, Buffer.from('', 'utf8'));
         left = emptyTmp;
     }
-    await vscode.commands.executeCommand('vscode.diff', left, tmp, `Cinzel: ${rel} (proposta)`);
+    await vscode.commands.executeCommand('vscode.diff', left, tmp, vscode.l10n.t('Cinzel: {0} (proposal)', rel));
 }

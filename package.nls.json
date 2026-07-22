@@ -1,0 +1,16 @@
+{
+  "cinzel.view.chat.name": "Chat",
+  "cinzel.command.setApiKey.title": "Cinzel: Set API key…",
+  "cinzel.command.clearApiKey.title": "Cinzel: Clear API key",
+  "cinzel.command.selectModel.title": "Cinzel: Select model…",
+  "cinzel.command.toggleCompletion.title": "Cinzel: Toggle autocomplete",
+  "cinzel.command.clearChat.title": "Cinzel: Clear conversation",
+  "cinzel.command.attachSelection.title": "Cinzel: Attach selection to chat",
+  "cinzel.command.attachFile.title": "Cinzel: Attach file to chat",
+  "cinzel.config.models.desc": "Models available in the chat. Each entry: `id`, `label`, `provider` (`openai` or `anthropic`), `baseUrl`, `model` and (for Anthropic) `maxTokens`. The API key is requested per `baseUrl` and stored in the system keychain.",
+  "cinzel.config.completion.enabled.desc": "Inline autocomplete (ghost text) via a local FIM model on Ollama.",
+  "cinzel.config.completion.ollamaHost.desc": "Ollama host for autocomplete.",
+  "cinzel.config.completion.model.desc": "FIM model. MUST be a `-base` build (with `insert` capability); the `instruct` variant does not do FIM.",
+  "cinzel.config.completion.maxTokens.desc": "Max tokens per suggestion (keep it short and fast).",
+  "cinzel.config.responseLanguage.desc": "Language the AI replies in. `auto` follows the editor's display language."
+}

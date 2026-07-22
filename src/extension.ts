@@ -23,7 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
             const cfg = vscode.workspace.getConfiguration('cinzel');
             const next = !cfg.get<boolean>('completion.enabled', true);
             await cfg.update('completion.enabled', next, vscode.ConfigurationTarget.Global);
-            vscode.window.showInformationMessage(`Cinzel: autocomplete ${next ? 'ligado' : 'desligado'}.`);
+            vscode.window.showInformationMessage(
+                next ? vscode.l10n.t('Cinzel: autocomplete enabled.') : vscode.l10n.t('Cinzel: autocomplete disabled.')
+            );
         })
     );
 }

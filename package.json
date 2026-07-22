@@ -10,6 +10,7 @@
   },
   "categories": ["AI", "Chat", "Other"],
   "main": "./out/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -18,17 +19,17 @@
     },
     "views": {
       "cinzel": [
-        { "id": "cinzel.chat", "name": "Chat", "type": "webview" }
+        { "id": "cinzel.chat", "name": "%cinzel.view.chat.name%", "type": "webview" }
       ]
     },
     "commands": [
-      { "command": "cinzel.setApiKey", "title": "Cinzel: Definir chave de API…" },
-      { "command": "cinzel.clearApiKey", "title": "Cinzel: Remover chave de API" },
-      { "command": "cinzel.selectModel", "title": "Cinzel: Escolher modelo…" },
-      { "command": "cinzel.completion.toggle", "title": "Cinzel: Ligar/desligar autocomplete" },
-      { "command": "cinzel.chat.clear", "title": "Cinzel: Limpar conversa" },
-      { "command": "cinzel.attachSelection", "title": "Cinzel: Anexar seleção ao chat" },
-      { "command": "cinzel.attachFile", "title": "Cinzel: Anexar ficheiro ao chat" }
+      { "command": "cinzel.setApiKey", "title": "%cinzel.command.setApiKey.title%" },
+      { "command": "cinzel.clearApiKey", "title": "%cinzel.command.clearApiKey.title%" },
+      { "command": "cinzel.selectModel", "title": "%cinzel.command.selectModel.title%" },
+      { "command": "cinzel.completion.toggle", "title": "%cinzel.command.toggleCompletion.title%" },
+      { "command": "cinzel.chat.clear", "title": "%cinzel.command.clearChat.title%" },
+      { "command": "cinzel.attachSelection", "title": "%cinzel.command.attachSelection.title%" },
+      { "command": "cinzel.attachFile", "title": "%cinzel.command.attachFile.title%" }
     ],
     "menus": {
       "view/title": [
@@ -42,9 +43,15 @@
     "configuration": {
       "title": "Cinzel",
       "properties": {
+        "cinzel.responseLanguage": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "pt", "pt-br", "en", "es", "fr", "de", "it", "nl", "zh-cn", "zh-tw", "ja", "ko", "ru"],
+          "description": "%cinzel.config.responseLanguage.desc%"
+        },
         "cinzel.models": {
           "type": "array",
-          "markdownDescription": "Modelos escolhíveis no chat. Cada entrada: `id`, `label`, `provider` (`openai` ou `anthropic`), `baseUrl`, `model` e (na Anthropic) `maxTokens`. A chave de API é pedida por `baseUrl` e guardada no keychain do sistema.",
+          "markdownDescription": "%cinzel.config.models.desc%",
           "items": {
             "type": "object",
             "required": ["id", "label", "provider", "baseUrl", "model"],
@@ -67,22 +74,22 @@
         "cinzel.completion.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Autocomplete inline (ghost text) via um modelo FIM local no Ollama."
+          "description": "%cinzel.config.completion.enabled.desc%"
         },
         "cinzel.completion.ollamaHost": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "Host do Ollama para o autocomplete."
+          "description": "%cinzel.config.completion.ollamaHost.desc%"
         },
         "cinzel.completion.model": {
           "type": "string",
           "default": "qwen2.5-coder:1.5b-base",
-          "markdownDescription": "Modelo FIM. TEM de ser uma build `-base` (com capacidade `insert`); a variante `instruct` não faz FIM."
+          "markdownDescription": "%cinzel.config.completion.model.desc%"
         },
         "cinzel.completion.maxTokens": {
           "type": "number",
           "default": 128,
-          "description": "Nº máximo de tokens por sugestão (mantém curto e rápido)."
+          "description": "%cinzel.config.completion.maxTokens.desc%"
         }
       }
     }

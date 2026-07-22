@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { streamChat } from '../core/provider';
 import { runAgent } from '../core/agent';
 import { TOOL_SPECS, executeTool } from './tools';
+import { responseLanguageDirective } from './i18n';
 import { AgentMessage, ChatMessage, ModelSpec, StreamConfig } from '../core/types';
 
 const MAX_ATTACHMENT_CHARS = 12_000;
@@ -13,22 +14,26 @@ const DEFAULT_MODELS: ModelSpec[] = [
     { id: 'openai-gpt-4o', label: 'OpenAI · GPT-4o', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }
 ];
 
-const AGENT_SYSTEM =
-    'És o Cinzel a fazer pair programming — um programador sénior ao lado do utilizador. ' +
-    'Responde em português de Portugal, conciso e técnico, como um colega de equipa.\n\n' +
-    'Pensas no PROJETO INTEIRO, não só no ficheiro atual. Fluxo:\n' +
-    '1. INVESTIGA primeiro: usa search_text para ver o que JÁ EXISTE (evita duplicar), ' +
-    'find_files para mapear a estrutura, read_file/list_dir para perceber o contexto. ' +
-    'Aponta o que encontras: "já existe um X", "isto é usado em 3 sítios", riscos.\n' +
-    '2. PLANEIA: se a tarefa modifica ficheiros, chama SEMPRE propose_plan (passos, ficheiros ' +
-    'a criar/editar, risco) e ESPERA aprovação. Pensa também no que também deve ser atualizado ' +
-    '(testes, documentação, chamadas relacionadas).\n' +
-    '3. IMPLEMENTA só depois de o plano ser aprovado, com write_file (cada escrita é confirmada).\n\n' +
-    'REGRA CRÍTICA: quando a tarefa é adicionar/criar/alterar código num ficheiro, mostrar o ' +
-    'código em texto NÃO serve — o ficheiro só muda se usares write_file. Não termines sem ' +
-    'write_file quando a tarefa é modificar um ficheiro.\n' +
-    'Se for só uma pergunta, responde diretamente — não faças plano para nada. ' +
-    'Nunca inventes conteúdos de ficheiros: lê-os.';
+/** System prompt do agente. A língua da resposta é dinâmica (ver i18n). */
+function agentSystem(): string {
+    return (
+        'És o Cinzel a fazer pair programming — um programador sénior ao lado do utilizador. ' +
+        responseLanguageDirective() + ' Sê conciso e técnico, como um colega de equipa.\n\n' +
+        'Pensas no PROJETO INTEIRO, não só no ficheiro atual. Fluxo:\n' +
+        '1. INVESTIGA primeiro: usa search_text para ver o que JÁ EXISTE (evita duplicar), ' +
+        'find_files para mapear a estrutura, read_file/list_dir para perceber o contexto. ' +
+        'Aponta o que encontras: "já existe um X", "isto é usado em 3 sítios", riscos.\n' +
+        '2. PLANEIA: se a tarefa modifica ficheiros, chama SEMPRE propose_plan (passos, ficheiros ' +
+        'a criar/editar, risco) e ESPERA aprovação. Pensa também no que também deve ser atualizado ' +
+        '(testes, documentação, chamadas relacionadas).\n' +
+        '3. IMPLEMENTA só depois de o plano ser aprovado, com write_file (cada escrita é confirmada).\n\n' +
+        'REGRA CRÍTICA: quando a tarefa é adicionar/criar/alterar código num ficheiro, mostrar o ' +
+        'código em texto NÃO serve — o ficheiro só muda se usares write_file. Não termines sem ' +
+        'write_file quando a tarefa é modificar um ficheiro.\n' +
+        'Se for só uma pergunta, responde diretamente — não faças plano para nada. ' +
+        'Nunca inventes conteúdos de ficheiros: lê-os.'
+    );
+}
 
 interface Attachment {
     id: string; label: string; path: string; languageId: string; content: string; truncated: boolean;
@@ -76,25 +81,25 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     async promptSetApiKey(): Promise<void> {
         const spec = this.activeModel();
         const key = await vscode.window.showInputBox({
-            title: `Chave para ${spec.label}`,
-            prompt: `Endpoint ${spec.baseUrl} — guardada no keychain do sistema, nunca em texto simples.`,
+            title: vscode.l10n.t('API key for {0}', spec.label),
+            prompt: vscode.l10n.t('Endpoint {0} — stored in the system keychain, never in plain text.', spec.baseUrl),
             password: true, ignoreFocusOut: true
         });
         if (key && key.trim()) {
             await this.context.secrets.store(this.secretKeyId(spec.baseUrl), key.trim());
-            vscode.window.showInformationMessage(`Cinzel: chave guardada para ${spec.provider} (${spec.baseUrl}).`);
+            vscode.window.showInformationMessage(vscode.l10n.t('Cinzel: key stored for {0} ({1}).', spec.provider, spec.baseUrl));
         }
     }
     async promptClearApiKey(): Promise<void> {
         const spec = this.activeModel();
         await this.context.secrets.delete(this.secretKeyId(spec.baseUrl));
-        vscode.window.showInformationMessage(`Cinzel: chave removida para ${spec.provider} (${spec.baseUrl}).`);
+        vscode.window.showInformationMessage(vscode.l10n.t('Cinzel: key removed for {0} ({1}).', spec.provider, spec.baseUrl));
     }
     async promptSelectModel(): Promise<void> {
         const models = this.models();
         const pick = await vscode.window.showQuickPick(
             models.map(m => ({ label: m.label, description: m.model, id: m.id })),
-            { title: 'Modelo do Cinzel' }
+            { title: vscode.l10n.t('Cinzel model') }
         );
         if (pick) { await this.setActiveModel((pick as { id: string }).id); }
     }
@@ -148,11 +153,11 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
 
     attachActiveEditor(mode: 'selection' | 'file' | 'auto'): void {
         const editor = this.lastEditor ?? vscode.window.activeTextEditor;
-        if (!editor) { vscode.window.showInformationMessage('Cinzel: abre um ficheiro para o anexar ao chat.'); return; }
+        if (!editor) { vscode.window.showInformationMessage(vscode.l10n.t('Cinzel: open a file to attach it to the chat.')); return; }
         const doc = editor.document;
         const hasSelection = !editor.selection.isEmpty;
         if (mode === 'selection' && !hasSelection) {
-            vscode.window.showInformationMessage('Cinzel: sem seleção. Seleciona código primeiro (ou usa "Anexar ficheiro").'); return;
+            vscode.window.showInformationMessage(vscode.l10n.t('Cinzel: no selection. Select code first (or use "Attach file").')); return;
         }
         const useSelection = mode === 'selection' || (mode === 'auto' && hasSelection);
         const name = doc.uri.path.split('/').pop() ?? doc.fileName;
@@ -166,7 +171,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
         if (truncated) { content = content.slice(0, MAX_ATTACHMENT_CHARS); }
         this.attachments.push({
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            label: truncated ? `${label} (cortado)` : label,
+            label: truncated ? vscode.l10n.t('{0} (truncated)', label) : label,
             path: vscode.workspace.asRelativePath(doc.uri),
             languageId: doc.languageId, content, truncated
         });
@@ -194,7 +199,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
         const spec = this.activeModel();
         const apiKey = await this.resolveKey(spec);
         if (!apiKey) {
-            view.webview.postMessage({ type: 'error', text: `Sem chave para ${spec.label}. Corre "Cinzel: Definir chave de API…" (⇧⌘P) com este modelo ativo.` });
+            view.webview.postMessage({ type: 'error', text: vscode.l10n.t('No key for {0}. Run "Cinzel: Set API key…" (⇧⌘P) with this model active.', spec.label) });
             return;
         }
         if (this.agentMode) { await this.runAgentTurn(text, view, spec, apiKey); }
@@ -207,7 +212,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
         view.webview.postMessage({ type: 'assistant-start' });
         const contextBlock = this.attachments.length ? this.buildContextBlock() : '';
         const requestMessages: ChatMessage[] = [
-            { role: 'system', content: 'És o assistente do Cinzel IDE. Responde em português de Portugal, conciso e técnico. Formata código em blocos markdown. Quando te derem contexto de ficheiros, baseia a resposta nele.' },
+            { role: 'system', content: 'És o assistente do Cinzel IDE. ' + responseLanguageDirective() + ' Sê conciso e técnico. Formata código em blocos markdown. Quando te derem contexto de ficheiros, baseia a resposta nele.' },
             ...this.history.slice(0, -1),
             { role: 'user', content: contextBlock ? `${contextBlock}\n\n---\n\n${text}` : text }
         ];
@@ -231,7 +236,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
         const contextBlock = this.attachments.length ? this.buildContextBlock() : '';
         const priorTurns: AgentMessage[] = this.history.slice(0, -1).map(m => ({ role: m.role, content: m.content }) as AgentMessage);
         const messages: AgentMessage[] = [
-            { role: 'system', content: AGENT_SYSTEM },
+            { role: 'system', content: agentSystem() },
             ...priorTurns,
             { role: 'user', content: contextBlock ? `${contextBlock}\n\n---\n\n${text}` : text }
         ];
@@ -252,8 +257,23 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     private html(webview: vscode.Webview): string {
         const nonce = getNonce();
         const csp = [`default-src 'none'`, `style-src ${webview.cspSource} 'unsafe-inline'`, `script-src 'nonce-${nonce}'`].join('; ');
+        // Strings da UI do webview: resolvidas no extension host (onde vscode.l10n
+        // existe) e injetadas no HTML/script (onde não existe).
+        const L = {
+            model: vscode.l10n.t('Model'),
+            agent: vscode.l10n.t('Agent'),
+            agentTitle: vscode.l10n.t('The agent can read, list and write files (with confirmation).'),
+            empty: vscode.l10n.t('Ask Cinzel something. Attach context, or turn on the Agent to let it act on files.'),
+            attachTitle: vscode.l10n.t('Attach selection / open file'),
+            placeholder: vscode.l10n.t('Write a message… (Enter sends, Shift+Enter new line)'),
+            send: vscode.l10n.t('Send'),
+            you: vscode.l10n.t('You'),
+            remove: vscode.l10n.t('Remove'),
+            cleared: vscode.l10n.t('Conversation cleared.')
+        };
+        const lang = (vscode.env.language || 'en').split('-')[0];
         return /* html */ `<!DOCTYPE html>
-<html lang="pt"><head>
+<html lang="${lang}"><head>
 <meta charset="UTF-8" /><meta http-equiv="Content-Security-Policy" content="${csp}" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <style>
@@ -284,18 +304,19 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
 </style></head>
 <body>
   <div id="topbar">
-    <label>Modelo</label><select id="model"></select>
-    <span id="agentwrap"><input type="checkbox" id="agent" /><label for="agent" title="O agente pode ler, listar e escrever ficheiros (com confirmação)">Agente</label></span>
+    <label>${L.model}</label><select id="model"></select>
+    <span id="agentwrap"><input type="checkbox" id="agent" /><label for="agent" title="${L.agentTitle}">${L.agent}</label></span>
   </div>
-  <div id="messages"><div class="empty">Pergunta algo ao Cinzel. Anexa contexto, ou liga o Agente para ele agir nos ficheiros.</div></div>
+  <div id="messages"><div class="empty">${L.empty}</div></div>
   <div id="attachments"></div>
   <div id="composer">
-    <button id="attach" class="btn secondary" title="Anexar seleção / ficheiro aberto">📎</button>
-    <textarea id="input" rows="1" placeholder="Escreve uma mensagem… (Enter envia, Shift+Enter nova linha)"></textarea>
-    <button id="send" class="btn">Enviar</button>
+    <button id="attach" class="btn secondary" title="${L.attachTitle}">📎</button>
+    <textarea id="input" rows="1" placeholder="${L.placeholder}"></textarea>
+    <button id="send" class="btn">${L.send}</button>
   </div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
+  const L = ${JSON.stringify(L)};
   const messages = document.getElementById('messages');
   const attachments = document.getElementById('attachments');
   const model = document.getElementById('model');
@@ -309,7 +330,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
   function addBubble(role, text) {
     clearEmpty();
     const el = document.createElement('div'); el.className = 'msg ' + role;
-    const tag = document.createElement('div'); tag.className = 'role'; tag.textContent = role === 'user' ? 'Tu' : 'Cinzel';
+    const tag = document.createElement('div'); tag.className = 'role'; tag.textContent = role === 'user' ? L.you : 'Cinzel';
     const body = document.createElement('span'); body.textContent = text || '';
     el.appendChild(tag); el.appendChild(body); messages.appendChild(el); messages.scrollTop = messages.scrollHeight;
     return body;
@@ -320,7 +341,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     for (const it of items) {
       const chip = document.createElement('span'); chip.className = 'chip';
       const label = document.createElement('span'); label.textContent = it.label;
-      const x = document.createElement('button'); x.textContent = '×'; x.title = 'Remover';
+      const x = document.createElement('button'); x.textContent = '×'; x.title = L.remove;
       x.addEventListener('click', () => vscode.postMessage({ type: 'removeAttachment', id: it.id }));
       chip.appendChild(label); chip.appendChild(x); attachments.appendChild(chip);
     }
@@ -354,7 +375,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     else if (m.type === 'models') { renderModels(m.items || [], m.active); }
     else if (m.type === 'state') { agent.checked = !!m.agentMode; }
     else if (m.type === 'error') { addLine('error', '⚠ ' + m.text); current = null; send.disabled = false; }
-    else if (m.type === 'clear') { messages.innerHTML = '<div class="empty">Conversa limpa.</div>'; current = null; send.disabled = false; }
+    else if (m.type === 'clear') { messages.innerHTML = '<div class="empty">' + L.cleared + '</div>'; current = null; send.disabled = false; }
   });
 </script>
 </body></html>`;
