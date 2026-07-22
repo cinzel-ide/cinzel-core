@@ -30,5 +30,8 @@
   "The agent wants to create \"{0}\" ({1} lines).": "O agente quer criar \"{0}\" ({1} linhas).",
   "Apply": "Aplicar",
   "View diff": "Ver diff",
-  "Cinzel: {0} (proposal)": "Cinzel: {0} (proposta)"
+  "Cinzel: {0} (proposal)": "Cinzel: {0} (proposta)",
+  "✨ Fix with AI: {0}": "✨ Corrigir com IA: {0}",
+  "Cinzel: an agent task is already running. Wait for it to finish.": "Cinzel: já há uma tarefa do agente a correr. Espera que termine.",
+  "Cinzel: no problems in this file to fix.": "Cinzel: este ficheiro não tem problemas para corrigir."
 }

@@ -15,8 +15,8 @@ const DEFAULT_MODELS: ModelSpec[] = [
 ];
 
 /** System prompt do agente. A língua da resposta é dinâmica (ver i18n). */
-function agentSystem(): string {
-    return (
+function agentSystem(extra?: string): string {
+    const base =
         'És o Cinzel a fazer pair programming — um programador sénior ao lado do utilizador. ' +
         responseLanguageDirective() + ' Sê conciso e técnico, como um colega de equipa.\n\n' +
         'Pensas no PROJETO INTEIRO, não só no ficheiro atual. Fluxo:\n' +
@@ -31,9 +31,36 @@ function agentSystem(): string {
         'código em texto NÃO serve — o ficheiro só muda se usares write_file. Não termines sem ' +
         'write_file quando a tarefa é modificar um ficheiro.\n' +
         'Se for só uma pergunta, responde diretamente — não faças plano para nada. ' +
-        'Nunca inventes conteúdos de ficheiros: lê-os.'
-    );
+        'Nunca inventes conteúdos de ficheiros: lê-os.';
+    return extra ? `${base}\n\n${extra}` : base;
 }
+
+/**
+ * Doutrina de correção de bugs (causa-raiz) — injetada no system prompt quando
+ * o turno vem do fluxo de fix (lâmpada / "corrigir problemas do ficheiro").
+ * Model-facing: NÃO passa por vscode.l10n.
+ */
+const BUGFIX_DOCTRINE =
+    'DOUTRINA DE CORREÇÃO — CAUSA RAIZ. O diagnóstico que recebes é um SINTOMA, não necessariamente a causa. ' +
+    'Antes de qualquer alteração:\n' +
+    '1. VÊ O QUADRO COMPLETO: chama get_diagnostics (sem path para o workspace inteiro, ou com o path do ficheiro) ' +
+    'para saberes todos os erros/avisos e onde estão — não olhes só para a linha reportada.\n' +
+    '2. DIAGNOSTICA (escreve no chat, curto e claro): (a) o que aconteceu; (b) a causa provável; (c) onde o problema ' +
+    'começou — a ORIGEM, que pode estar NOUTRO ficheiro; (d) que ficheiros serão afetados. Lê antes de afirmar ' +
+    '(read_file) e segue a cadeia com search_text/find_files.\n' +
+    '3. PERSEGUE A CAUSA RAIZ, não o sintoma: se um valor é null na linha X, pergunta PORQUÊ é null e sobe a cadeia ' +
+    '(ex.: null em UserService porque o AuthMiddleware não inicializa o utilizador — corrige a ORIGEM). Distingue causa de sintoma.\n' +
+    '4. PLANEIA com propose_plan ANTES de editar: passos concretos e ordenados, um passo para ADICIONAR/ATUALIZAR um ' +
+    'teste de regressão quando fizer sentido, e o risco. ESPERA aprovação.\n' +
+    '5. APLICA só depois de aprovado, com write_file — muda só o necessário, sem reescrever código não relacionado ' +
+    'nem deixar comentários "corrigido aqui". Se for falso positivo, di-lo e explica porquê em vez de "corrigir".\n' +
+    '6. VERIFICA DEPENDENTES: com search_text procura outros sítios do mesmo fluxo/símbolo com a mesma falha latente; se existirem, entram no plano.\n' +
+    '7. VALIDA relendo: depois de aplicar, chama get_diagnostics no(s) ficheiro(s) afetado(s) com waitMs~1500 (o LSP ' +
+    're-diagnostica ao gravar) e confirma que o diagnóstico-alvo desapareceu e não surgiram erros novos. Só então dizes ' +
+    '"Resolvido", com o antes/depois. Se persistir, apresenta NOVO plano e repete.\n' +
+    'NÃO executas build, testes nem linter (ainda não tens essas ferramentas) — a tua validação é a releitura de diagnósticos. ' +
+    'Para bugs de lógica pura sem diagnóstico, entrega diagnóstico + plano + correção + teste de regressão escrito, e diz ' +
+    'claramente que a prova por execução fica pendente.';
 
 interface Attachment {
     id: string; label: string; path: string; languageId: string; content: string; truncated: boolean;
@@ -52,6 +79,12 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     private attachments: Attachment[] = [];
     private lastEditor?: vscode.TextEditor;
     private agentMode: boolean;
+    /** Um turno de cada vez — o gatilho externo (lâmpada) não passa pelo send.disabled do webview. */
+    private busy = false;
+    /** Seeds de fix guardados enquanto a vista ainda não resolveu (revela-se e faz flush por ordem). */
+    private pendingSeeds: string[] = [];
+    /** Incrementa em clear() — um turno em curso não faz push do assistant se a geração mudou. */
+    private generation = 0;
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.lastEditor = vscode.window.activeTextEditor;
@@ -108,6 +141,9 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
 
     resolveWebviewView(view: vscode.WebviewView): void {
         this.view = view;
+        // Quando a webview é descartada (escondida sem retenção), esquece a referência
+        // para que o próximo fix volte a passar pelo caminho que revela o painel.
+        view.onDidDispose(() => { if (this.view === view) { this.view = undefined; } });
         view.webview.options = { enableScripts: true, localResourceRoots: [this.context.extensionUri] };
         view.webview.html = this.html(view.webview);
         view.webview.onDidReceiveMessage(async msg => {
@@ -129,9 +165,15 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
         this.postModels();
         this.postAttachments();
         this.postState();
+        if (this.pendingSeeds.length) {
+            const seeds = this.pendingSeeds;
+            this.pendingSeeds = [];
+            void (async () => { for (const seed of seeds) { await this.runAgentTask(seed); } })();
+        }
     }
 
     clear(): void {
+        this.generation++; // invalida um turno em curso — não corrompe o history depois de limpar
         this.history = [];
         this.attachments = [];
         this.view?.webview.postMessage({ type: 'clear' });
@@ -196,17 +238,57 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     private async handleSend(text: string): Promise<void> {
         const view = this.view;
         if (!view) { return; }
-        const spec = this.activeModel();
-        const apiKey = await this.resolveKey(spec);
-        if (!apiKey) {
-            view.webview.postMessage({ type: 'error', text: vscode.l10n.t('No key for {0}. Run "Cinzel: Set API key…" (⇧⌘P) with this model active.', spec.label) });
+        if (this.busy) { return; }
+        this.busy = true; // síncrono, antes de qualquer await — fecha a janela de dupla-execução
+        try {
+            const spec = this.activeModel();
+            const apiKey = await this.resolveKey(spec);
+            if (!apiKey) {
+                view.webview.postMessage({ type: 'error', text: vscode.l10n.t('No key for {0}. Run "Cinzel: Set API key…" (⇧⌘P) with this model active.', spec.label) });
+                return;
+            }
+            if (this.agentMode) { await this.runAgentTurn(text, view, spec, apiKey); }
+            else { await this.runChatTurn(text, view, spec, apiKey); }
+        } finally {
+            this.busy = false;
+        }
+    }
+
+    /**
+     * Entrypoint público do fluxo de correção (lâmpada / "corrigir problemas do
+     * ficheiro"): corre o agente com a doutrina de causa-raiz injetada. Não muda
+     * o toggle "Agente" persistido — chama runAgentTurn diretamente.
+     */
+    async runAgentTask(seed: string): Promise<void> {
+        if (this.busy) {
+            vscode.window.showInformationMessage(vscode.l10n.t('Cinzel: an agent task is already running. Wait for it to finish.'));
             return;
         }
-        if (this.agentMode) { await this.runAgentTurn(text, view, spec, apiKey); }
-        else { await this.runChatTurn(text, view, spec, apiKey); }
+        const view = this.view;
+        if (!view) {
+            // Vista ainda não resolvida: enfileira o seed e revela o painel (flush em resolveWebviewView).
+            const wasEmpty = this.pendingSeeds.length === 0;
+            this.pendingSeeds.push(seed);
+            if (wasEmpty) { await vscode.commands.executeCommand('cinzel.chat.focus'); }
+            return;
+        }
+        this.busy = true; // síncrono, antes de qualquer await
+        try {
+            view.show?.(true); // traz o painel para a frente (pode estar colapsado/escondido)
+            const spec = this.activeModel();
+            const apiKey = await this.resolveKey(spec);
+            if (!apiKey) {
+                view.webview.postMessage({ type: 'error', text: vscode.l10n.t('No key for {0}. Run "Cinzel: Set API key…" (⇧⌘P) with this model active.', spec.label) });
+                return;
+            }
+            await this.runAgentTurn(seed, view, spec, apiKey, BUGFIX_DOCTRINE);
+        } finally {
+            this.busy = false;
+        }
     }
 
     private async runChatTurn(text: string, view: vscode.WebviewView, spec: ModelSpec, apiKey: string): Promise<void> {
+        const gen = this.generation;
         this.history.push({ role: 'user', content: text });
         view.webview.postMessage({ type: 'user', text });
         view.webview.postMessage({ type: 'assistant-start' });
@@ -222,21 +304,22 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
                 answer += delta;
                 view.webview.postMessage({ type: 'assistant-delta', text: delta });
             });
-            this.history.push({ role: 'assistant', content: answer });
+            if (gen === this.generation) { this.history.push({ role: 'assistant', content: answer }); }
             view.webview.postMessage({ type: 'assistant-end' });
         } catch (e) {
             view.webview.postMessage({ type: 'error', text: e instanceof Error ? e.message : String(e) });
         }
     }
 
-    private async runAgentTurn(text: string, view: vscode.WebviewView, spec: ModelSpec, apiKey: string): Promise<void> {
+    private async runAgentTurn(text: string, view: vscode.WebviewView, spec: ModelSpec, apiKey: string, systemExtra?: string): Promise<void> {
+        const gen = this.generation;
         this.history.push({ role: 'user', content: text });
         view.webview.postMessage({ type: 'user', text });
         view.webview.postMessage({ type: 'agent-start' });
         const contextBlock = this.attachments.length ? this.buildContextBlock() : '';
         const priorTurns: AgentMessage[] = this.history.slice(0, -1).map(m => ({ role: m.role, content: m.content }) as AgentMessage);
         const messages: AgentMessage[] = [
-            { role: 'system', content: agentSystem() },
+            { role: 'system', content: agentSystem(systemExtra) },
             ...priorTurns,
             { role: 'user', content: contextBlock ? `${contextBlock}\n\n---\n\n${text}` : text }
         ];
@@ -247,7 +330,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
                 onToolResult: (c, r) => view.webview.postMessage({ type: 'tool-result', name: c.name, summary: r.slice(0, 140) }),
                 executeTool
             });
-            this.history.push({ role: 'assistant', content: final });
+            if (gen === this.generation) { this.history.push({ role: 'assistant', content: final }); }
         } catch (e) {
             view.webview.postMessage({ type: 'error', text: e instanceof Error ? e.message : String(e) });
         }

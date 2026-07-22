@@ -7,6 +7,8 @@
   "cinzel.command.clearChat.title": "Cinzel: Limpar conversa",
   "cinzel.command.attachSelection.title": "Cinzel: Anexar seleção ao chat",
   "cinzel.command.attachFile.title": "Cinzel: Anexar ficheiro ao chat",
+  "cinzel.command.fixBug.title": "Cinzel: Corrigir problema com IA",
+  "cinzel.command.fixFileProblems.title": "Cinzel: Corrigir problemas do ficheiro com IA",
   "cinzel.config.models.desc": "Modelos escolhíveis no chat. Cada entrada: `id`, `label`, `provider` (`openai` ou `anthropic`), `baseUrl`, `model` e (na Anthropic) `maxTokens`. A chave de API é pedida por `baseUrl` e guardada no keychain do sistema.",
   "cinzel.config.completion.enabled.desc": "Autocomplete inline (ghost text) via um modelo FIM local no Ollama.",
   "cinzel.config.completion.ollamaHost.desc": "Host do Ollama para o autocomplete.",

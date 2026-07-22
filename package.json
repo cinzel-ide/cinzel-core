@@ -29,15 +29,21 @@
       { "command": "cinzel.completion.toggle", "title": "%cinzel.command.toggleCompletion.title%" },
       { "command": "cinzel.chat.clear", "title": "%cinzel.command.clearChat.title%" },
       { "command": "cinzel.attachSelection", "title": "%cinzel.command.attachSelection.title%" },
-      { "command": "cinzel.attachFile", "title": "%cinzel.command.attachFile.title%" }
+      { "command": "cinzel.attachFile", "title": "%cinzel.command.attachFile.title%" },
+      { "command": "cinzel.fixBug", "title": "%cinzel.command.fixBug.title%" },
+      { "command": "cinzel.fixFileProblems", "title": "%cinzel.command.fixFileProblems.title%" }
     ],
     "menus": {
       "view/title": [
         { "command": "cinzel.chat.clear", "when": "view == cinzel.chat", "group": "navigation" }
       ],
+      "commandPalette": [
+        { "command": "cinzel.fixBug", "when": "false" }
+      ],
       "editor/context": [
         { "command": "cinzel.attachSelection", "when": "editorHasSelection", "group": "cinzel@1" },
-        { "command": "cinzel.attachFile", "group": "cinzel@2" }
+        { "command": "cinzel.attachFile", "group": "cinzel@2" },
+        { "command": "cinzel.fixFileProblems", "group": "cinzel@3" }
       ]
     },
     "configuration": {

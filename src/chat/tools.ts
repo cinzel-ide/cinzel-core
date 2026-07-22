@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import { ToolCall, ToolSpec } from '../core/types';
+import { getDiagnosticsText, DiagSeverityName, SEVERITY_NAMES } from './diagnostics';
 
 /** Teto de leitura, para não estourar o orçamento de tokens. */
 const MAX_READ_CHARS = 20_000;
@@ -70,6 +71,20 @@ export const TOOL_SPECS: ToolSpec[] = [
             },
             required: ['summary', 'steps', 'risk']
         }
+    },
+    {
+        name: 'get_diagnostics',
+        description: 'Lê os problemas (erros/avisos do compilador, LSP e linter) já publicados no workspace. Sem "path" = workspace inteiro (inclui ficheiros não abertos). Usa para ver o quadro completo ANTES de corrigir e para VALIDAR DEPOIS de aplicar (com waitMs ~1500, porque o LSP re-diagnostica de forma assíncrona ao gravar).',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Caminho relativo a UM ficheiro; omite para o workspace inteiro.' },
+                severities: { type: 'array', description: "Filtro de severidade; por defeito ['error','warning'].", items: { type: 'string', enum: ['error', 'warning', 'info', 'hint'] } },
+                max: { type: 'number', description: 'Teto de diagnósticos (por defeito 40).' },
+                waitMs: { type: 'number', description: 'Se >0 e com path, espera pela nova publicação do LSP (ou até waitMs) antes de ler. Usa ~1500 na validação pós-correção.' }
+            },
+            required: []
+        }
     }
 ];
 
@@ -102,6 +117,33 @@ async function exists(uri: vscode.Uri): Promise<boolean> {
     try { await vscode.workspace.fs.stat(uri); return true; } catch { return false; }
 }
 
+/**
+ * Aplica a escrita via WorkspaceEdit — a alteração entra na undo stack nativa,
+ * por isso Ctrl+Z reverte de forma limpa (fs.writeFile não é undoable). Grava a
+ * seguir para persistir no disco. Cai para fs.writeFile se o applyEdit falhar.
+ */
+async function applyWrite(uri: vscode.Uri, content: string): Promise<void> {
+    try {
+        const existed = await exists(uri);
+        const edit = new vscode.WorkspaceEdit();
+        if (!existed) {
+            edit.createFile(uri, { ignoreIfExists: true });
+            edit.insert(uri, new vscode.Position(0, 0), content);
+        } else {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+            edit.replace(uri, fullRange, content);
+        }
+        const ok = await vscode.workspace.applyEdit(edit);
+        if (!ok) { throw new Error('applyEdit devolveu false'); }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await doc.save();
+    } catch {
+        // Fallback: escrita direta ao disco (sem undo nativo, mas grava sempre).
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+    }
+}
+
 /** Executa uma chamada de ferramenta e devolve o resultado (texto). */
 export async function executeTool(call: ToolCall): Promise<string> {
     const args = call.arguments;
@@ -128,10 +170,21 @@ export async function executeTool(call: ToolCall): Promise<string> {
             if (!approved) {
                 return 'RECUSADO: o utilizador não aprovou a escrita.';
             }
-            await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+            await applyWrite(uri, content);
             const doc = await vscode.workspace.openTextDocument(uri);
             await vscode.window.showTextDocument(doc, { preview: false });
             return `Escrito ${rel} (${content.split('\n').length} linhas).`;
+        }
+        case 'get_diagnostics': {
+            const severities = Array.isArray(args.severities)
+                ? (args.severities as unknown[]).map(String).filter((s): s is DiagSeverityName => (SEVERITY_NAMES as string[]).includes(s))
+                : undefined;
+            return getDiagnosticsText({
+                path: args.path != null ? String(args.path) : undefined,
+                severities: severities && severities.length ? severities : undefined,
+                max: typeof args.max === 'number' ? args.max : undefined,
+                waitMs: typeof args.waitMs === 'number' ? args.waitMs : undefined
+            });
         }
         case 'search_text':
             return searchText(String(args.query ?? ''));
