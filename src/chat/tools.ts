@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { ToolCall, ToolSpec } from '../core/types';
 import { getDiagnosticsText, DiagSeverityName, SEVERITY_NAMES } from './diagnostics';
 
 /** Teto de leitura, para não estourar o orçamento de tokens. */
 const MAX_READ_CHARS = 20_000;
+
+/** Hash do conteúdo lido/escrito — usado pela guarda anti-perda-de-dados. */
+function sha256(s: string): string {
+    return createHash('sha256').update(s, 'utf8').digest('hex');
+}
 
 /** As ferramentas apresentadas ao modelo. */
 export const TOOL_SPECS: ToolSpec[] = [
@@ -29,7 +35,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     },
     {
         name: 'write_file',
-        description: 'Escreve (cria ou substitui) um ficheiro. O utilizador CONFIRMA antes de aplicar.',
+        description: 'CRIA um ficheiro novo (ou reescreve por completo um ficheiro pequeno que já leste por inteiro). Para ALTERAR um ficheiro existente usa edit_file — o write_file de um ficheiro que só leste em excerto é recusado (apagaria o resto). O utilizador CONFIRMA antes de aplicar.',
         parameters: {
             type: 'object',
             properties: {
@@ -37,6 +43,20 @@ export const TOOL_SPECS: ToolSpec[] = [
                 content: { type: 'string', description: 'Conteúdo completo do ficheiro.' }
             },
             required: ['path', 'content']
+        }
+    },
+    {
+        name: 'edit_file',
+        description: 'Altera uma REGIÃO de um ficheiro existente: encontra old_string (texto EXATO do ficheiro atual) e substitui por new_string. É a forma segura de editar — não reescreve o ficheiro inteiro, por isso nunca apaga partes que não leste. Mantém old_string pequeno (3-5 linhas com contexto à volta) para o match ser único. Para CRIAR um ficheiro novo, usa write_file.',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Caminho relativo ao ficheiro a editar.' },
+                old_string: { type: 'string', description: 'Texto EXATO a localizar (espaços/indentação incluídos). Não vazio; não pode cobrir o ficheiro inteiro.' },
+                new_string: { type: 'string', description: 'Texto de substituição. Vazio para apagar a região.' },
+                replace_all: { type: 'boolean', description: 'Se true, substitui TODAS as ocorrências; por omissão false (exige match único).' }
+            },
+            required: ['path', 'old_string', 'new_string']
         }
     },
     {
@@ -144,60 +164,181 @@ async function applyWrite(uri: vscode.Uri, content: string): Promise<void> {
     }
 }
 
-/** Executa uma chamada de ferramenta e devolve o resultado (texto). */
-export async function executeTool(call: ToolCall): Promise<string> {
-    const args = call.arguments;
-    switch (call.name) {
-        case 'read_file': {
-            const { uri, rel } = resolveInWorkspace(String(args.path ?? ''));
-            const data = await vscode.workspace.fs.readFile(uri);
-            const text = Buffer.from(data).toString('utf8');
-            const clipped = text.length > MAX_READ_CHARS;
-            return `# ${rel}${clipped ? ' (excerto)' : ''}\n${text.slice(0, MAX_READ_CHARS)}`;
-        }
-        case 'list_dir': {
-            const { uri, rel } = resolveInWorkspace(String(args.path ?? '.'));
-            const entries = await vscode.workspace.fs.readDirectory(uri);
-            const lines = entries
-                .map(([name, type]) => (type === vscode.FileType.Directory ? `${name}/` : name))
-                .sort();
-            return `# ${rel || '.'}\n${lines.join('\n')}`;
-        }
-        case 'write_file': {
-            const { uri, rel } = resolveInWorkspace(String(args.path ?? ''));
-            const content = String(args.content ?? '');
-            const approved = await confirmWrite(rel, uri, content);
-            if (!approved) {
-                return 'RECUSADO: o utilizador não aprovou a escrita.';
+/**
+ * Cria um executor de ferramentas com estado POR CONVERSA. O estado (readState)
+ * regista que ficheiros foram lidos POR INTEIRO nesta conversa (rel → sha256 do
+ * conteúdo), para a guarda anti-perda-de-dados do write_file. A assinatura do
+ * executor devolvido é idêntica a AgentHooks.executeTool — o núcleo não muda.
+ */
+export function createToolExecutor(): (call: ToolCall) => Promise<string> {
+    const readState = new Map<string, string>();
+
+    return async function executeTool(call: ToolCall): Promise<string> {
+        const args = call.arguments;
+        switch (call.name) {
+            case 'read_file': {
+                const { uri, rel } = resolveInWorkspace(String(args.path ?? ''));
+                const data = await vscode.workspace.fs.readFile(uri);
+                const text = Buffer.from(data).toString('utf8');
+                const clipped = text.length > MAX_READ_CHARS;
+                // Leitura por inteiro desbloqueia um write_file total; a truncada limpa o crédito.
+                if (clipped) { readState.delete(rel); } else { readState.set(rel, sha256(text)); }
+                return `# ${rel}${clipped ? ' (excerto)' : ''}\n${text.slice(0, MAX_READ_CHARS)}`;
             }
-            await applyWrite(uri, content);
-            const doc = await vscode.workspace.openTextDocument(uri);
-            await vscode.window.showTextDocument(doc, { preview: false });
-            return `Escrito ${rel} (${content.split('\n').length} linhas).`;
+            case 'list_dir': {
+                const { uri, rel } = resolveInWorkspace(String(args.path ?? '.'));
+                const entries = await vscode.workspace.fs.readDirectory(uri);
+                const lines = entries
+                    .map(([name, type]) => (type === vscode.FileType.Directory ? `${name}/` : name))
+                    .sort();
+                return `# ${rel || '.'}\n${lines.join('\n')}`;
+            }
+            case 'write_file': {
+                const { uri, rel } = resolveInWorkspace(String(args.path ?? ''));
+                const content = String(args.content ?? '');
+                // Guarda anti-perda: reescrever um ficheiro EXISTENTE só se foi lido por
+                // inteiro nesta conversa E continua igual no disco. Criar novo é livre.
+                if (await exists(uri)) {
+                    const seen = readState.get(rel);
+                    if (!seen) {
+                        return `RECUSADO (guarda anti-perda): "${rel}" já existe e não foi lido por inteiro nesta conversa (só um excerto, ou nem foi lido). Reescrever tudo com write_file apagaria a parte que não viste. Usa edit_file para alterar só a região (old_string→new_string). Se tens mesmo de o reescrever por completo, lê-o primeiro por inteiro com read_file (só se couber em ${MAX_READ_CHARS} caracteres).`;
+                    }
+                    let cur: string | null = null;
+                    try { cur = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'); } catch { cur = null; }
+                    if (cur === null || sha256(cur) !== seen) {
+                        return `RECUSADO (guarda anti-perda): "${rel}" mudou no disco desde que o leste. Reescrevê-lo agora apagaria alterações que não viste. Relê-o com read_file, ou usa edit_file para mudar só a região.`;
+                    }
+                }
+                const approved = await confirmWrite(rel, uri, content);
+                if (!approved) {
+                    return 'RECUSADO: o utilizador não aprovou a escrita.';
+                }
+                await applyWrite(uri, content);
+                // Regista o conteúdo REAL no disco (o save pode normalizar BOM/EOL).
+                try { readState.set(rel, sha256(Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'))); }
+                catch { readState.set(rel, sha256(content)); }
+                const doc = await vscode.workspace.openTextDocument(uri);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                return `Escrito ${rel} (${content.split('\n').length} linhas).`;
+            }
+            case 'edit_file': {
+                const res = await editFile(args);
+                if (res.applied && res.rel) { readState.delete(res.rel); } // ainda não viste a cauda por inteiro
+                return res.text;
+            }
+            case 'get_diagnostics': {
+                const severities = Array.isArray(args.severities)
+                    ? (args.severities as unknown[]).map(String).filter((s): s is DiagSeverityName => (SEVERITY_NAMES as string[]).includes(s))
+                    : undefined;
+                return getDiagnosticsText({
+                    path: args.path != null ? String(args.path) : undefined,
+                    severities: severities && severities.length ? severities : undefined,
+                    max: typeof args.max === 'number' ? args.max : undefined,
+                    waitMs: typeof args.waitMs === 'number' ? args.waitMs : undefined
+                });
+            }
+            case 'search_text':
+                return searchText(String(args.query ?? ''));
+            case 'find_files': {
+                const uris = await vscode.workspace.findFiles(String(args.pattern ?? '**/*'), '**/node_modules/**', 100);
+                if (!uris.length) { return 'sem ficheiros'; }
+                return uris.map(u => vscode.workspace.asRelativePath(u)).sort().join('\n');
+            }
+            case 'propose_plan':
+                return proposePlan(args);
+            default:
+                return `ERRO: ferramenta desconhecida "${call.name}".`;
         }
-        case 'get_diagnostics': {
-            const severities = Array.isArray(args.severities)
-                ? (args.severities as unknown[]).map(String).filter((s): s is DiagSeverityName => (SEVERITY_NAMES as string[]).includes(s))
-                : undefined;
-            return getDiagnosticsText({
-                path: args.path != null ? String(args.path) : undefined,
-                severities: severities && severities.length ? severities : undefined,
-                max: typeof args.max === 'number' ? args.max : undefined,
-                waitMs: typeof args.waitMs === 'number' ? args.waitMs : undefined
-            });
-        }
-        case 'search_text':
-            return searchText(String(args.query ?? ''));
-        case 'find_files': {
-            const uris = await vscode.workspace.findFiles(String(args.pattern ?? '**/*'), '**/node_modules/**', 100);
-            if (!uris.length) { return 'sem ficheiros'; }
-            return uris.map(u => vscode.workspace.asRelativePath(u)).sort().join('\n');
-        }
-        case 'propose_plan':
-            return proposePlan(args);
-        default:
-            return `ERRO: ferramenta desconhecida "${call.name}".`;
+    };
+}
+
+/**
+ * Edição cirúrgica por search/replace EXATO. Lê o ficheiro INTEIRO do disco
+ * (ignora o teto de 20k) e substitui só a região por deslocamento — a cauda que
+ * o modelo nunca viu fica byte-a-byte intacta. Match exato apenas: nada de fuzzy.
+ */
+async function editFile(args: Record<string, unknown>): Promise<{ text: string; applied: boolean; rel?: string }> {
+    const { uri, rel } = resolveInWorkspace(String(args.path ?? ''));
+    const oldStr = String(args.old_string ?? '');
+    const newStr = String(args.new_string ?? '');
+    const replaceAll = args.replace_all === true;
+
+    if (!(await exists(uri))) {
+        return { text: `edit_file: "${rel}" não existe. Para criar um ficheiro novo usa write_file.`, applied: false };
     }
+    const raw = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+    // O BOM é metadados de codificação — o save reaplica-o. Trabalhamos sem ele
+    // para não o duplicar ao reescrever o conteúdo via WorkspaceEdit.
+    const hasBom = raw.charCodeAt(0) === 0xFEFF;
+    const body = hasBom ? raw.slice(1) : raw;
+
+    if (oldStr === '') {
+        return { text: 'edit_file: old_string vazio. Para inserir texto, inclui em old_string uma âncora que já exista no ficheiro e repete-a em new_string com o texto novo à volta.', applied: false };
+    }
+    if (oldStr === newStr) {
+        return { text: 'edit_file: old_string e new_string são iguais — nada a alterar.', applied: false };
+    }
+    if (oldStr.trim() === body.trim()) {
+        return { text: 'edit_file: old_string cobre o ficheiro inteiro. Para reescrever tudo, usa write_file (lê-o primeiro por inteiro com read_file). Se só queres mudar uma parte, reduz old_string à região exata.', applied: false };
+    }
+
+    let count = 0;
+    for (let i = body.indexOf(oldStr); i !== -1; i = body.indexOf(oldStr, i + oldStr.length)) { count++; }
+    if (count === 0) {
+        const near = nearestLine(body, oldStr);
+        const hint = near ? ` Linha mais parecida no ficheiro: "${near}".` : '';
+        return { text: `edit_file: 0 correspondências para old_string em "${rel}". O texto tem de bater EXATAMENTE — espaços, indentação, aspas e comentários incluídos, e sem números de linha. Relê a região com read_file e copia o excerto literal com 3-5 linhas de contexto.${hint}`, applied: false };
+    }
+    if (count > 1 && !replaceAll) {
+        return { text: `edit_file: ${count} correspondências para old_string em "${rel}". Acrescenta linhas de contexto à volta para o match ser único, ou passa replace_all:true para substituir as ${count}.`, applied: false };
+    }
+
+    // Splice por deslocamento na string original — os outros bytes (e EOL) ficam intactos.
+    let newBody: string;
+    if (replaceAll) {
+        newBody = body.split(oldStr).join(newStr);
+    } else {
+        const idx = body.indexOf(oldStr);
+        newBody = body.slice(0, idx) + newStr + body.slice(idx + oldStr.length);
+    }
+
+    const approved = await confirmWrite(rel, uri, newBody, 'edit');
+    if (!approved) {
+        return { text: 'RECUSADO: o utilizador não aprovou a edição.', applied: false };
+    }
+    await applyWrite(uri, newBody);
+    const n = replaceAll ? count : 1;
+    return { text: `Editado ${rel} (${n} ${n === 1 ? 'região substituída' : 'regiões substituídas'}).`, applied: true, rel };
+}
+
+/** Similaridade barata (Dice de bigramas) para sugerir a linha mais parecida em 0-matches. */
+function similarity(a: string, b: string): number {
+    if (a === b) { return 1; }
+    if (a.length < 2 || b.length < 2) { return 0; }
+    const grams = new Map<string, number>();
+    for (let i = 0; i < a.length - 1; i++) { const g = a.slice(i, i + 2); grams.set(g, (grams.get(g) ?? 0) + 1); }
+    let inter = 0;
+    for (let i = 0; i < b.length - 1; i++) {
+        const g = b.slice(i, i + 2);
+        const c = grams.get(g) ?? 0;
+        if (c > 0) { grams.set(g, c - 1); inter++; }
+    }
+    return (2 * inter) / ((a.length - 1) + (b.length - 1));
+}
+
+/** A linha do ficheiro mais parecida com a 1ª linha não-vazia de old_string. */
+function nearestLine(body: string, needle: string): string {
+    const target = (needle.split('\n').find(l => l.trim().length > 0) ?? '').trim();
+    if (!target) { return ''; }
+    let best = '';
+    let bestScore = 0;
+    for (const line of body.split('\n')) {
+        const t = line.trim();
+        if (!t) { continue; }
+        const score = similarity(t, target);
+        if (score > bestScore) { bestScore = score; best = t; }
+    }
+    return bestScore >= 0.5 ? best.slice(0, 120) : '';
 }
 
 /** Procura texto no workspace (scan em JS, sem dependências; ignora node_modules). */
@@ -248,16 +389,18 @@ async function proposePlan(args: Record<string, unknown>): Promise<string> {
 }
 
 /** Confirmação humana antes de escrever. Oferece ver o diff primeiro. */
-async function confirmWrite(rel: string, uri: vscode.Uri, content: string): Promise<boolean> {
+async function confirmWrite(rel: string, uri: vscode.Uri, content: string, mode: 'write' | 'edit' = 'write'): Promise<boolean> {
     const already = await exists(uri);
     const detail = content.split('\n').slice(0, 12).join('\n');
     const lines = content.split('\n').length;
     const apply = vscode.l10n.t('Apply');
     const viewDiff = vscode.l10n.t('View diff');
     for (; ;) {
-        const message = already
-            ? vscode.l10n.t('The agent wants to replace "{0}" ({1} lines).', rel, lines)
-            : vscode.l10n.t('The agent wants to create "{0}" ({1} lines).', rel, lines);
+        const message = mode === 'edit'
+            ? vscode.l10n.t('The agent wants to edit a region of "{0}".', rel)
+            : already
+                ? vscode.l10n.t('The agent wants to replace "{0}" ({1} lines).', rel, lines)
+                : vscode.l10n.t('The agent wants to create "{0}" ({1} lines).', rel, lines);
         const choice = await vscode.window.showWarningMessage(
             message, { modal: true, detail }, apply, viewDiff
         );

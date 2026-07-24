@@ -28,6 +28,7 @@
   "Risk: {0}": "Risco: {0}",
   "The agent wants to replace \"{0}\" ({1} lines).": "O agente quer substituir \"{0}\" ({1} linhas).",
   "The agent wants to create \"{0}\" ({1} lines).": "O agente quer criar \"{0}\" ({1} linhas).",
+  "The agent wants to edit a region of \"{0}\".": "O agente quer editar uma região de \"{0}\".",
   "Apply": "Aplicar",
   "View diff": "Ver diff",
   "Cinzel: {0} (proposal)": "Cinzel: {0} (proposta)",

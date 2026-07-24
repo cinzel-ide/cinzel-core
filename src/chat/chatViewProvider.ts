@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { streamChat } from '../core/provider';
 import { runAgent } from '../core/agent';
-import { TOOL_SPECS, executeTool } from './tools';
+import { TOOL_SPECS, createToolExecutor } from './tools';
 import { responseLanguageDirective } from './i18n';
 import { AgentMessage, ChatMessage, ModelSpec, StreamConfig } from '../core/types';
 
@@ -26,10 +26,13 @@ function agentSystem(extra?: string): string {
         '2. PLANEIA: se a tarefa modifica ficheiros, chama SEMPRE propose_plan (passos, ficheiros ' +
         'a criar/editar, risco) e ESPERA aprovação. Pensa também no que também deve ser atualizado ' +
         '(testes, documentação, chamadas relacionadas).\n' +
-        '3. IMPLEMENTA só depois de o plano ser aprovado, com write_file (cada escrita é confirmada).\n\n' +
-        'REGRA CRÍTICA: quando a tarefa é adicionar/criar/alterar código num ficheiro, mostrar o ' +
-        'código em texto NÃO serve — o ficheiro só muda se usares write_file. Não termines sem ' +
-        'write_file quando a tarefa é modificar um ficheiro.\n' +
+        '3. IMPLEMENTA só depois de o plano ser aprovado. Para ALTERAR um ficheiro que já existe usa ' +
+        'edit_file (substitui só a região: old_string→new_string) — NUNCA reescrevas o ficheiro inteiro ' +
+        'com write_file, porque podes só ter lido um excerto e apagarias o resto. write_file é para CRIAR ' +
+        'ficheiros novos. Cada alteração é confirmada.\n\n' +
+        'REGRA CRÍTICA: quando a tarefa é adicionar/alterar código, mostrar o código em texto NÃO serve — ' +
+        'o ficheiro só muda se usares edit_file (alteração) ou write_file (ficheiro novo). Não termines sem ' +
+        'aplicar a alteração quando a tarefa é modificar um ficheiro.\n' +
         'Se for só uma pergunta, responde diretamente — não faças plano para nada. ' +
         'Nunca inventes conteúdos de ficheiros: lê-os.';
     return extra ? `${base}\n\n${extra}` : base;
@@ -52,8 +55,9 @@ const BUGFIX_DOCTRINE =
     '(ex.: null em UserService porque o AuthMiddleware não inicializa o utilizador — corrige a ORIGEM). Distingue causa de sintoma.\n' +
     '4. PLANEIA com propose_plan ANTES de editar: passos concretos e ordenados, um passo para ADICIONAR/ATUALIZAR um ' +
     'teste de regressão quando fizer sentido, e o risco. ESPERA aprovação.\n' +
-    '5. APLICA só depois de aprovado, com write_file — muda só o necessário, sem reescrever código não relacionado ' +
-    'nem deixar comentários "corrigido aqui". Se for falso positivo, di-lo e explica porquê em vez de "corrigir".\n' +
+    '5. APLICA só depois de aprovado, com edit_file — substitui só a região afetada (old_string→new_string), sem ' +
+    'reescrever o ficheiro inteiro nem código não relacionado, nem deixar comentários "corrigido aqui". Reserva ' +
+    'write_file para ficheiros novos. Se for falso positivo, di-lo e explica porquê em vez de "corrigir".\n' +
     '6. VERIFICA DEPENDENTES: com search_text procura outros sítios do mesmo fluxo/símbolo com a mesma falha latente; se existirem, entram no plano.\n' +
     '7. VALIDA relendo: depois de aplicar, chama get_diagnostics no(s) ficheiro(s) afetado(s) com waitMs~1500 (o LSP ' +
     're-diagnostica ao gravar) e confirma que o diagnóstico-alvo desapareceu e não surgiram erros novos. Só então dizes ' +
@@ -85,6 +89,8 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
     private pendingSeeds: string[] = [];
     /** Incrementa em clear() — um turno em curso não faz push do assistant se a geração mudou. */
     private generation = 0;
+    /** Executor de ferramentas com o registo de leituras (guarda anti-perda), por conversa. */
+    private toolExec = createToolExecutor();
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.lastEditor = vscode.window.activeTextEditor;
@@ -174,6 +180,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
 
     clear(): void {
         this.generation++; // invalida um turno em curso — não corrompe o history depois de limpar
+        this.toolExec = createToolExecutor(); // nova conversa = registo de leituras limpo
         this.history = [];
         this.attachments = [];
         this.view?.webview.postMessage({ type: 'clear' });
@@ -328,7 +335,7 @@ export class CinzelChatViewProvider implements vscode.WebviewViewProvider {
                 onText: t => view.webview.postMessage({ type: 'assistant-text', text: t }),
                 onToolCall: c => view.webview.postMessage({ type: 'tool-call', name: c.name, args: summarizeArgs(c.arguments) }),
                 onToolResult: (c, r) => view.webview.postMessage({ type: 'tool-result', name: c.name, summary: r.slice(0, 140) }),
-                executeTool
+                executeTool: this.toolExec
             });
             if (gen === this.generation) { this.history.push({ role: 'assistant', content: final }); }
         } catch (e) {
